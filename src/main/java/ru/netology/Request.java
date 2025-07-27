@@ -1,38 +1,53 @@
 package ru.netology;
 
-import java.io.BufferedInputStream;
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import org.apache.commons.fileupload.FileItem;
+import org.apache.commons.fileupload.disk.DiskFileItemFactory;
+import org.apache.commons.fileupload.servlet.ServletFileUpload;
+import org.apache.commons.fileupload.FileUploadException;
+
+import java.io.*;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 public class Request {
+
+    public static final List<String> validPaths = List.of(
+            "/index.html",
+            "/spring.svg",
+            "/spring.png",
+            "/resources.html",
+            "/styles.css",
+            "/app.js",
+            "/links.html",
+            "/forms.html",
+            "/classic.html",
+            "/events.html",
+            "/events.js"
+    );
+
     private final String method;
     private final String path;
     private final InputStream body;
     private final Map<String, String> headers;
     private final Map<String, List<String>> queryParams;
     private final Map<String, List<String>> bodyParams;
-
-    public static final List<String> validPaths = List.of(
-            "/index.html", "/spring.svg", "/spring.png", "/resources.html", "/styles.css",
-            "/app.js", "/links.html", "/forms.html", "/classic.html", "/events.html", "/events.js"
-    );
+    private final Map<String, List<Part>> parts;
 
     public Request(String method,
                    String path,
                    InputStream body,
                    Map<String, String> headers,
                    Map<String, List<String>> queryParams,
-                   Map<String, List<String>> bodyParams) {
+                   Map<String, List<String>> bodyParams,
+                   Map<String, List<Part>> parts) {
         this.method = method;
         this.path = path;
         this.body = body;
         this.headers = headers;
         this.queryParams = queryParams;
         this.bodyParams = bodyParams;
+        this.parts = parts != null ? parts : Collections.emptyMap();
     }
 
     public String getMethod() {
@@ -59,6 +74,14 @@ public class Request {
         return bodyParams;
     }
 
+    public Map<String, List<Part>> getParts() {
+        return Collections.unmodifiableMap(parts);
+    }
+
+    public List<Part> getPart(String name) {
+        return parts.getOrDefault(name, Collections.emptyList());
+    }
+
     public String getQueryParam(String name) {
         List<String> values = queryParams.get(name);
         return (values == null || values.isEmpty()) ? null : values.get(0);
@@ -79,11 +102,10 @@ public class Request {
     }
 
     public static Request parse(BufferedInputStream inStream) throws IOException {
-        final int limit = 4096;
+        final int limit = 8192;
         inStream.mark(limit);
         byte[] buffer = new byte[limit];
         int read = inStream.read(buffer);
-
         if (read == -1) return null;
 
         byte[] requestLineDelimiter = new byte[]{'\r', '\n'};
@@ -96,7 +118,6 @@ public class Request {
 
         String method = requestLineParts[0];
         String fullPath = requestLineParts[1];
-
         if (!fullPath.startsWith("/")) return null;
 
         byte[] headersDelimiter = new byte[]{'\r', '\n', '\r', '\n'};
@@ -124,8 +145,7 @@ public class Request {
         if (headersMap.containsKey("Content-Length")) {
             try {
                 contentLength = Integer.parseInt(headersMap.get("Content-Length"));
-            } catch (NumberFormatException ignored) {
-            }
+            } catch (NumberFormatException ignored) {}
         }
 
         byte[] bodyBytes = new byte[0];
@@ -148,25 +168,22 @@ public class Request {
         }
 
         Map<String, List<String>> bodyParams = Collections.emptyMap();
+        Map<String, List<Part>> parts = Collections.emptyMap();
+
         String contentType = headersMap.getOrDefault("Content-Type", "");
 
-        if (contentType != null && contentLength > 0) {
-            if (contentType.startsWith("text/plain")) {
-                bodyParams = parsePlainTextBody(new ByteArrayInputStream(bodyBytes));
-            } else if (contentType.startsWith("application/x-www-form-urlencoded")) {
+        if (contentType != null) {
+            if (contentType.startsWith("multipart/form-data") && contentLength > 0) {
+                parts = parseMultipart(bodyBytes, contentType);
+            } else if (contentType.startsWith("application/x-www-form-urlencoded") && contentLength > 0) {
                 String bodyStr = new String(bodyBytes, StandardCharsets.UTF_8);
                 bodyParams = parseQueryString(bodyStr);
+            } else if (contentType.startsWith("text/plain") && contentLength > 0) {
+                bodyParams = parsePlainTextBody(new ByteArrayInputStream(bodyBytes));
             }
         }
 
-        System.out.println("Method: " + method);
-        System.out.println("Path: " + path);
-        System.out.println("Headers: " + headersMap);
-        System.out.println("Query params: " + queryParams);
-        System.out.println("Body params: " + bodyParams);
-        System.out.println("Body raw: " + (contentLength > 0 ? new String(bodyBytes, StandardCharsets.UTF_8) : "<empty>"));
-
-        return new Request(method, path, bodyStream, headersMap, queryParams, bodyParams);
+        return new Request(method, path, bodyStream, headersMap, queryParams, bodyParams, parts);
     }
 
     private static Map<String, List<String>> parsePlainTextBody(InputStream bodyStream) throws IOException {
@@ -188,9 +205,7 @@ public class Request {
 
     private static Map<String, List<String>> parseQueryString(String query) {
         Map<String, List<String>> queryPairs = new LinkedHashMap<>();
-        if (query == null || query.isEmpty()) {
-            return Collections.emptyMap();
-        }
+        if (query == null || query.isEmpty()) return Collections.emptyMap();
         String[] pairs = query.split("&");
         for (String pair : pairs) {
             int index = pair.indexOf('=');
@@ -229,5 +244,67 @@ public class Request {
             return i;
         }
         return -1;
+    }
+
+    private static Map<String, List<Part>> parseMultipart(byte[] bodyBytes, String contentTypeHeader) throws IOException {
+        try {
+            String boundary = extractBoundary(contentTypeHeader);
+            if (boundary == null) throw new IOException("Boundary not found in Content-Type header");
+
+            DiskFileItemFactory factory = new DiskFileItemFactory();
+            ServletFileUpload upload = new ServletFileUpload(factory);
+            upload.setHeaderEncoding("UTF-8");
+
+            ByteArrayInputStream inputStream = new ByteArrayInputStream(bodyBytes);
+            RequestContextImpl ctx = new RequestContextImpl(contentTypeHeader, bodyBytes.length, inputStream);
+            List<FileItem> items = upload.parseRequest(ctx);
+
+            Map<String, List<Part>> map = new LinkedHashMap<>();
+
+            for (FileItem item : items) {
+                String fieldName = item.getFieldName();
+                String fileName = item.isFormField() ? null : item.getName();
+                String mimeType = item.getContentType();
+                byte[] content = item.get();
+
+                Part part = new Part(fieldName, fileName, mimeType, content);
+                map.computeIfAbsent(fieldName, k -> new ArrayList<>()).add(part);
+            }
+            return map;
+
+        } catch (FileUploadException e) {
+            throw new IOException(e);
+        }
+    }
+
+    private static String extractBoundary(String contentType) {
+        for (String param : contentType.split(";")) {
+            param = param.trim();
+            if (param.startsWith("boundary=")) {
+                String boundary = param.substring("boundary=".length());
+                if (boundary.startsWith("\"") && boundary.endsWith("\"")) {
+                    boundary = boundary.substring(1, boundary.length() - 1);
+                }
+                return boundary;
+            }
+        }
+        return null;
+    }
+
+    private static class RequestContextImpl implements org.apache.commons.fileupload.RequestContext {
+        private final String contentType;
+        private final int contentLength;
+        private final InputStream inputStream;
+
+        public RequestContextImpl(String contentType, int contentLength, InputStream inputStream) {
+            this.contentType = contentType;
+            this.contentLength = contentLength;
+            this.inputStream = inputStream;
+        }
+
+        @Override public String getCharacterEncoding() { return "UTF-8"; }
+        @Override public String getContentType() { return contentType; }
+        @Override public int getContentLength() { return contentLength; }
+        @Override public InputStream getInputStream() throws IOException { return inputStream; }
     }
 }
