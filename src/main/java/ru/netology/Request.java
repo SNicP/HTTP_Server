@@ -150,9 +150,12 @@ public class Request {
         Map<String, List<String>> bodyParams = Collections.emptyMap();
         String contentType = headersMap.getOrDefault("Content-Type", "");
 
-        if (contentType != null) {
-            if (contentType.startsWith("text/plain") && contentLength > 0) {
+        if (contentType != null && contentLength > 0) {
+            if (contentType.startsWith("text/plain")) {
                 bodyParams = parsePlainTextBody(new ByteArrayInputStream(bodyBytes));
+            } else if (contentType.startsWith("application/x-www-form-urlencoded")) {
+                String bodyStr = new String(bodyBytes, StandardCharsets.UTF_8);
+                bodyParams = parseQueryString(bodyStr);
             }
         }
 
@@ -183,25 +186,6 @@ public class Request {
         return formParams;
     }
 
-    private static Optional<String> extractHeader(List<String> headers, String header) {
-        String prefix = header.toLowerCase() + ":";
-        return headers.stream()
-                .filter(h -> h.toLowerCase().startsWith(prefix))
-                .map(h -> h.substring(h.indexOf(":") + 1).trim())
-                .findFirst();
-    }
-
-    private static int indexOf(byte[] array, byte[] target, int start, int max) {
-        outer:
-        for (int i = start; i <= max - target.length; i++) {
-            for (int j = 0; j < target.length; j++) {
-                if (array[i + j] != target[j]) continue outer;
-            }
-            return i;
-        }
-        return -1;
-    }
-
     private static Map<String, List<String>> parseQueryString(String query) {
         Map<String, List<String>> queryPairs = new LinkedHashMap<>();
         if (query == null || query.isEmpty()) {
@@ -226,5 +210,24 @@ public class Request {
 
     private static String decode(String value) {
         return URLDecoder.decode(value, StandardCharsets.UTF_8);
+    }
+
+    private static Optional<String> extractHeader(List<String> headers, String header) {
+        String prefix = header.toLowerCase() + ":";
+        return headers.stream()
+                .filter(h -> h.toLowerCase().startsWith(prefix))
+                .map(h -> h.substring(h.indexOf(":") + 1).trim())
+                .findFirst();
+    }
+
+    private static int indexOf(byte[] array, byte[] target, int start, int max) {
+        outer:
+        for (int i = start; i <= max - target.length; i++) {
+            for (int j = 0; j < target.length; j++) {
+                if (array[i + j] != target[j]) continue outer;
+            }
+            return i;
+        }
+        return -1;
     }
 }
