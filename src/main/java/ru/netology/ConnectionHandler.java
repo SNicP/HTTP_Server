@@ -1,9 +1,9 @@
 package ru.netology;
 
+import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.net.Socket;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -20,68 +20,73 @@ public class ConnectionHandler implements Runnable {
 
     @Override
     public void run() {
-        try (
-                socket;
-                var in = socket.getInputStream();
-                var out = socket.getOutputStream();
-                var bufferedOut = new BufferedOutputStream(out)
-        ) {
+        try (socket;
+             var in = new BufferedInputStream(socket.getInputStream());
+             var out = new BufferedOutputStream(socket.getOutputStream())) {
+
             Request request = Request.parse(in);
+
             if (request == null) {
-                respondBadRequest(bufferedOut);
+                respondBadRequest(out);
                 return;
             }
 
-            // Ищем динамический обработчик для метода и пути
+            System.out.println("Request received: " + request.getMethod() + " " + request.getPath());
+
             Map<String, Handler> methodHandlers = handlers.get(request.getMethod().toUpperCase());
             if (methodHandlers != null) {
                 Handler handler = methodHandlers.get(request.getPath());
                 if (handler != null) {
-                    handler.handle(request, bufferedOut);
+                    handler.handle(request, out);
                     return;
                 }
             }
 
             if (Request.validPaths.contains(request.getPath())) {
-                String relativePath = request.getPath().substring(1);
-                Path filePath = Path.of(".", "public", relativePath);
-
-                if (!Files.exists(filePath)) {
-                    respondNotFound(bufferedOut);
-                    return;
-                }
-
-                byte[] content;
-                String contentType = Files.probeContentType(filePath);
-
-                if (request.getPath().equals("/classic.html")) {
-                    String template = Files.readString(filePath, StandardCharsets.UTF_8);
-                    String replaced = template.replace("{time}", LocalDateTime.now().toString());
-                    content = replaced.getBytes(StandardCharsets.UTF_8);
-                    contentType = "text/html";
-                } else {
-                    content = Files.readAllBytes(filePath);
-                }
-
-                sendResponse(bufferedOut, "200 OK", content, contentType);
+                serveStaticFile(request.getPath(), out);
                 return;
             }
 
-            respondNotFound(bufferedOut);
+            respondNotFound(out);
 
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
+    private void serveStaticFile(String path, BufferedOutputStream out) throws IOException {
+        String relativePath = path.substring(1);
+
+        Path filePath = Path.of(".", "public", relativePath);
+
+        if (!Files.exists(filePath)) {
+            respondNotFound(out);
+            return;
+        }
+
+        byte[] content;
+        String contentType = Files.probeContentType(filePath);
+
+        if ("/classic.html".equals(path)) {
+            String template = Files.readString(filePath);
+            String replaced = template.replace("{time}", LocalDateTime.now().toString());
+            content = replaced.getBytes();
+            contentType = "text/html";
+        } else {
+            content = Files.readAllBytes(filePath);
+        }
+
+        sendResponse(out, "200 OK", content, contentType);
+    }
+
     private void sendResponse(BufferedOutputStream out, String status, byte[] body, String contentType) throws IOException {
         String response = "HTTP/1.1 " + status + "\r\n" +
-                "Content-Type: " + contentType + "\r\n" +
+                "Content-Type: " + (contentType != null ? contentType : "application/octet-stream") + "\r\n" +
                 "Content-Length: " + body.length + "\r\n" +
                 "Connection: close\r\n" +
                 "\r\n";
 
-        out.write(response.getBytes(StandardCharsets.UTF_8));
+        out.write(response.getBytes());
         out.write(body);
         out.flush();
     }
@@ -92,7 +97,7 @@ public class ConnectionHandler implements Runnable {
                         "Content-Length: 0\r\n" +
                         "Connection: close\r\n" +
                         "\r\n";
-        out.write(response.getBytes(StandardCharsets.UTF_8));
+        out.write(response.getBytes());
         out.flush();
     }
 
@@ -102,7 +107,7 @@ public class ConnectionHandler implements Runnable {
                         "Content-Length: 0\r\n" +
                         "Connection: close\r\n" +
                         "\r\n";
-        out.write(response.getBytes(StandardCharsets.UTF_8));
+        out.write(response.getBytes());
         out.flush();
     }
 }
